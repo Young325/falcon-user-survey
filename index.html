@@ -1,0 +1,1185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>XbotGo 用户调研洞察</title>
+<style>
+:root {
+  --font-anthropic-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-anthropic-serif: Georgia, "Songti SC", "STSong", "Noto Serif SC", "Times New Roman", serif;
+  --color-fg: #1f1e1c; --color-fg-muted: #6b6a66; --color-bg: #faf9f7; --color-panel: #ffffff; --color-border-line: #e6e3de;
+  --color-ok: #2f7d4f; --color-warn: #a65f00; --color-bad: #c2412d;
+  --cds-chart-status-critical: #d6452f; --cds-chart-muted: #cfcac2; --cds-chart-grid: #eeebe6; --cds-chart-reference: #8a867f;
+  --cds-surface-popover: #ffffff; --cds-border: #e0dcd5; --cds-shadow-popover: 0 4px 16px rgba(0,0,0,.10); --cds-text-secondary: #6b6a66;
+  --cds-font-size-caption: 12.5px; --cds-font-size-body: 14.5px; --cds-font-size-heading: 16px; --cds-font-size-title: 30px; --cds-font-weight-medium: 600;
+  --cds-gap-xs: 4px; --cds-gap-sm: 8px; --cds-gap-md: 16px; --cds-gap-lg: 24px; --cds-gap-xl: 40px;
+  --cds-pad-xs: 4px; --cds-pad-sm: 8px; --cds-pad-md: 12px; --cds-pad-lg: 20px; --cds-radius: 8px;
+  --cds-dur-slow: 480ms; --cds-ease-out: cubic-bezier(.2,.8,.2,1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-fg: #ecebe8; --color-fg-muted: #a3a09a; --color-bg: #1c1b19; --color-panel: #252422; --color-border-line: #3a3835;
+    --color-ok: #6cc28f; --color-warn: #e0a24a; --color-bad: #f07a63;
+    --cds-chart-status-critical: #f0644c; --cds-chart-muted: #55524d; --cds-chart-grid: #33312e; --cds-chart-reference: #8f8b84;
+    --cds-surface-popover: #2c2b28; --cds-border: #45423e; --cds-shadow-popover: 0 4px 16px rgba(0,0,0,.4); --cds-text-secondary: #a3a09a;
+    color-scheme: dark;
+  }
+}
+html, body { margin: 0; background: var(--color-bg); color: var(--color-fg); }
+body { font-family: var(--font-anthropic-sans); -webkit-font-smoothing: antialiased; }
+#dash-root { --dash-gutter: 16px; padding: 24px var(--dash-gutter) 48px; }
+@media (min-width: 720px) { #dash-root { --dash-gutter: 32px; } }
+#dash-root b, #dash-root strong { font-weight: 600; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script>
+/* Minimal stand-in for the dashboard runtime: loads data.json, runs calcs, draws on filter/tab/resize. */
+window.dash = (() => {
+  const datasets = {}; const calcs = {}; const calcOrder = []; const cache = {};
+  const draws = new Map(); const listeners = [];
+  let params = { role: 'All', sport: 'All', theme: null }; const defaults = { ...params };
+  let ready = false; let scheduled = false;
+  const light = ['#2f6fdb', '#d9822b', '#2a9d8f', '#8e5ad6', '#c94f7c', '#6b8e23', '#b8860b', '#4a7ba6'];
+  const dark = ['#6f9cf0', '#f0a35a', '#4cc3b3', '#b18af0', '#e27aa3', '#9cc256', '#e0b84a', '#7fa9d3'];
+  const isDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const api = {
+    get colors() { return isDark() ? dark : light; },
+    calc(id, def) { calcs[id] = def; calcOrder.push(id); },
+    loader() {},
+    data(id) {
+      if (!ready) return { status: 'loading', data: [], refreshing: false, meta: [] };
+      if (datasets[id]) return { status: 'ok', data: datasets[id], columns: Object.keys(datasets[id][0] || {}), refreshing: false, meta: [] };
+      if (calcs[id]) {
+        if (!(id in cache)) cache[id] = calcs[id].fn(...calcs[id].inputs.map((i) => api.data(i).data));
+        return { status: 'ok', data: cache[id], columns: Object.keys((cache[id] || [])[0] || {}), refreshing: false, meta: [] };
+      }
+      return { status: 'missing', data: [], refreshing: false, meta: [] };
+    },
+    onData(fn) { listeners.push(fn); try { fn(); } catch (e) { console.error(e); } },
+    draw(name, fn) {
+      if (fn) { draws.set(name, fn); schedule(); return; }
+      runDraw(name);
+    },
+    params() { return { ...params }; },
+    setParams(p) { params = { ...params, ...p }; schedule(); },
+    resetParams() { params = { ...defaults }; schedule(); },
+    setLink(name) { try { history.replaceState(null, '', '#' + name); } catch (e) {} schedule(); },
+    refresh() {},
+  };
+  const visible = (el) => !el.closest('[hidden]');
+  function runDraw(name) {
+    const fn = draws.get(name); if (!fn) return;
+    document.querySelectorAll('[data-draw="' + name + '"]').forEach((el) => { if (visible(el)) { try { fn(el); } catch (e) { console.error(name, e); } } });
+  }
+  function runAll() {
+    scheduled = false;
+    listeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
+    for (const name of draws.keys()) runDraw(name);
+  }
+  function schedule() { if (scheduled) return; scheduled = true; requestAnimationFrame(runAll); }
+  let lastW = 0;
+  window.addEventListener('resize', () => { const w = window.innerWidth; if (Math.abs(w - lastW) > 4) { lastW = w; schedule(); } });
+  if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', schedule);
+  fetch('data.json').then((r) => r.json()).then((rows) => { datasets.survey = rows; ready = true; lastW = window.innerWidth; schedule(); })
+    .catch((e) => { document.getElementById('dash-root').insertAdjacentHTML('afterbegin', '<p style="color:var(--color-bad)">数据加载失败，请刷新页面。</p>'); console.error(e); });
+  return api;
+})();
+</script>
+</head>
+<body>
+<div id="dash-root">
+<style>
+#dash-root { --dash-gutter: clamp(16px, 3vw, 40px); }
+.xb { font-family: var(--font-anthropic-sans); color: var(--color-fg); max-width: 1280px; margin-inline: auto; }
+.xb-head h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0 0 var(--cds-gap-xs); }
+.xb-head p { margin: 0; color: var(--color-fg-muted); font-size: var(--cds-font-size-body); max-width: 70ch; }
+.xb-tabs { display: flex; gap: var(--cds-gap-xs); margin: var(--cds-gap-lg) 0 var(--cds-gap-md); border-bottom: 1px solid var(--color-border-line); flex-wrap: wrap; }
+.xb-tab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent; padding: var(--cds-pad-sm) var(--cds-pad-md); font: inherit; font-size: var(--cds-font-size-body); color: var(--color-fg-muted); cursor: pointer; margin-bottom: -1px; }
+.xb-tab[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-fg); font-weight: var(--cds-font-weight-medium); }
+.xb-sec-title { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: var(--cds-gap-xl) 0 var(--cds-gap-sm); }
+.xb-sec-note { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); margin: 0 0 var(--cds-gap-md); max-width: 80ch; }
+.xb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: var(--cds-gap-md); }
+.xb-card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); min-width: 0; }
+.xb-card h3 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0 0 var(--cds-gap-xs); }
+.xb-card .xb-note { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); margin: 0 0 var(--cds-gap-md); }
+.xb-ins { display: flex; flex-direction: column; gap: var(--cds-gap-sm); }
+.xb-ins .xb-tag { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); text-transform: none; letter-spacing: .02em; }
+.xb-ins h3 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-heading); line-height: 1.35; }
+.xb-ins p { margin: 0; font-size: var(--cds-font-size-body); line-height: 1.6; }
+.xb-ins .xb-act { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); border-top: 1px solid var(--color-border-line); padding-top: var(--cds-pad-sm); margin-top: auto; line-height: 1.55; }
+.xb b.xb-n, .xb .xb-n { font-weight: var(--cds-font-weight-medium); font-variant-numeric: tabular-nums; }
+.xb-filters { display: flex; flex-direction: column; gap: var(--cds-gap-sm); background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-md) var(--cds-pad-lg); position: sticky; top: 0; z-index: 3; }
+.xb-frow { display: flex; align-items: center; gap: var(--cds-gap-xs); flex-wrap: wrap; }
+.xb-flabel { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); min-width: 3.5em; }
+.xb-chip { appearance: none; font: inherit; font-size: var(--cds-font-size-caption); padding: 4px 12px; border-radius: 999px; border: 1px solid var(--color-border-line); background: var(--color-bg); color: var(--color-fg); cursor: pointer; }
+.xb-chip[aria-pressed="true"] { background: var(--color-fg); color: var(--color-bg); border-color: var(--color-fg); }
+.xb-fmeta { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); display: flex; gap: var(--cds-gap-md); flex-wrap: wrap; align-items: center; }
+.xb-warn { color: var(--color-warn); }
+.xb-take { font-size: var(--cds-font-size-body); line-height: 1.6; margin: var(--cds-gap-md) 0 0; max-width: 90ch; }
+.xb-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr)); gap: var(--cds-gap-md); margin-top: var(--cds-gap-md); }
+.xb-kpi { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-md) var(--cds-pad-lg); }
+.xb-kpi .xb-kl { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: 0 0 var(--cds-gap-xs); }
+.xb-kpi .xb-kv { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.xb-kpi .xb-ks { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: var(--cds-gap-xs) 0 0; }
+.xb-chart { position: relative; min-height: 120px; }
+.xb-chart svg { display: block; overflow: visible; }
+.xb-tip { position: absolute; pointer-events: none; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); border-radius: var(--cds-radius); box-shadow: var(--cds-shadow-popover); padding: var(--cds-pad-xs) var(--cds-pad-sm); font-size: var(--cds-font-size-caption); white-space: nowrap; z-index: 5; }
+.xb-tip .xb-tt { color: var(--cds-text-secondary); }
+.xb-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: var(--cds-gap-lg); }
+.xb-sub { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: 0 0 var(--cds-gap-xs); }
+.xb-comments { list-style: none; margin: 0; padding: 0; max-height: 28rem; overflow: auto; display: flex; flex-direction: column; gap: var(--cds-gap-sm); }
+.xb-comments li { border-left: 2px solid var(--color-border-line); padding: 2px 0 2px var(--cds-pad-sm); font-size: var(--cds-font-size-caption); line-height: 1.55; }
+.xb-comments .xb-cm { color: var(--color-fg-muted); display: block; margin-bottom: 2px; }
+.xb-picked { appearance: none; font: inherit; font-size: var(--cds-font-size-caption); border: 1px solid var(--color-border-line); border-radius: 999px; background: var(--color-bg); color: var(--color-fg); padding: 2px 10px; cursor: pointer; margin-bottom: var(--cds-gap-sm); }
+.xb-tablewrap { overflow: auto; max-height: 34rem; }
+.xb-table { border-collapse: collapse; width: 100%; font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; }
+.xb-table th { position: sticky; top: 0; background: var(--color-panel); text-align: right; font-weight: var(--cds-font-weight-medium); padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); white-space: nowrap; cursor: pointer; }
+.xb-table th:nth-child(-n+2), .xb-table td:nth-child(-n+2) { text-align: left; }
+.xb-table td { text-align: right; padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+.xb-table tr.xb-grp td { background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+.xb-table td.xb-hi { color: var(--color-ok); font-weight: var(--cds-font-weight-medium); }
+.xb-table td.xb-lo { color: var(--color-bad); font-weight: var(--cds-font-weight-medium); }
+.xb-legend { display: flex; gap: var(--cds-gap-md); flex-wrap: wrap; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin-top: var(--cds-gap-sm); }
+.xb-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.xb-sw-crit { background: var(--cds-chart-status-critical); }
+.xb-sw-mid { background: var(--cds-chart-muted); }
+.xb-sw-good { background: var(--xb-good, #3b82f6); }
+.xb-foot { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); margin: var(--cds-gap-xl) 0 0; line-height: 1.6; max-width: 90ch; }
+#explore > .xb-card { margin-bottom: var(--cds-gap-md); }
+.xb-insight { margin: var(--cds-gap-md) 0 0; padding: var(--cds-pad-sm) var(--cds-pad-md); background: color-mix(in srgb, var(--cds-chart-status-critical) 7%, transparent); border-left: 3px solid var(--cds-chart-status-critical); border-radius: var(--cds-radius); font-size: var(--cds-font-size-caption); line-height: 1.7; }
+.xb-insight-wide { margin: 0 0 var(--cds-gap-md); max-width: 100ch; }
+.xb-il { display: inline-block; font-weight: var(--cds-font-weight-medium); margin-right: 8px; color: var(--cds-chart-status-critical); }
+.xb-il2 { display: inline-block; font-weight: var(--cds-font-weight-medium); margin-right: 6px; color: var(--color-fg); }
+.xb-improve { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: var(--cds-gap-md); }
+.xb-imp { display: flex; flex-direction: column; gap: var(--cds-gap-xs); }
+.xb [hidden] { display: none !important; }
+.xb-imp h3 { margin: 0; }
+.xb-imphead { display: flex; justify-content: space-between; align-items: center; gap: var(--cds-gap-sm); }
+.xb-pri { font-size: var(--cds-font-size-caption); padding: 2px 10px; border-radius: 999px; border: 1px solid var(--color-border-line); color: var(--color-fg-muted); white-space: nowrap; }
+.xb-pri.xb-pri-hi { color: var(--color-bg); background: var(--cds-chart-status-critical); border-color: var(--cds-chart-status-critical); }
+.xb-pri.xb-pri-mid { color: var(--cds-chart-status-critical); border-color: var(--cds-chart-status-critical); }
+.xb-impcount { margin: 0; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.xb-impcount b { font-size: var(--cds-font-size-heading); color: var(--color-fg); }
+.xb-impwhat { margin: var(--cds-gap-xs) 0 0; font-size: var(--cds-font-size-caption); line-height: 1.65; }
+.xb-imp .xb-act { margin: 0 0 var(--cds-gap-xs); border-top: 0; padding-top: 0; color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); line-height: 1.65; }
+.xb-quotes { max-height: 15rem; border-top: 1px solid var(--color-border-line); padding-top: var(--cds-pad-sm); }
+.xb-quotes li { font-style: normal; }
+.xb-sw-warm { background: color-mix(in srgb, var(--cds-chart-status-critical) 35%, var(--color-panel)); }
+[data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+[data-dash-source-state=empty] { color: transparent; }
+@media (prefers-reduced-motion: no-preference) { .xb-chart svg .xb-bar { animation: xbgrow var(--cds-dur-slow) var(--cds-ease-out); transform-origin: left center; transform-box: fill-box; } @keyframes xbgrow { from { transform: scaleX(0); } to { transform: scaleX(1); } } }
+</style>
+
+<div class="xb">
+  <header class="xb-head" id="top">
+    <h1>XbotGo 用户调研洞察</h1>
+    <p>Falcon 买家问卷（Zigpoll，2026 年 9–10 月）× 同一批客户的 Shopify 订单。邮件发出 <b class="xb-n" data-draw="v" data-source="response" data-field="sent" data-where="key=all" data-fmt="int">—</b> 封，可关联订单的有效回复 <b class="xb-n" data-draw="v" data-source="response" data-field="respondents" data-where="key=all" data-fmt="int">—</b> 份，回复率 <b class="xb-n" data-draw="v" data-source="response" data-field="rate" data-where="key=all" data-fmt="pct1">—</b>。按身份和所拍球类细分，看谁买、为什么买、买了什么、哪里不满意。</p>
+  </header>
+
+  <nav class="xb-tabs" role="tablist">
+    <button class="xb-tab" role="tab" data-tab="insights" aria-selected="true">关键洞察</button>
+    <button class="xb-tab" role="tab" data-tab="explore" aria-selected="false">筛选分析</button>
+    <button class="xb-tab" role="tab" data-tab="compare" aria-selected="false">细分对比</button>
+  </nav>
+
+  <!-- ============ INSIGHTS ============ -->
+  <section id="insights" data-page="insights">
+    <p class="xb-sec-note">每张卡片是一个按身份或球类拆出来的发现，以及它对独立站的含义。数字都来自下方数据；想看任一人群的全貌，切到「筛选分析」。</p>
+    <div class="xb-grid">
+
+      <article class="xb-card xb-ins" id="ins-coach">
+        <span class="xb-tag">身份 · 教练 vs 家长</span>
+        <h3>教练是高预算、爱配全套的人群</h3>
+        <p>教练中 <b class="xb-n" data-draw="v" data-source="seg" data-field="highBudgetRate" data-where="role=Coach&amp;sport=All" data-fmt="pct">—</b> 愿意为追踪相机花 $800 以上，家长只有 <b class="xb-n" data-draw="v" data-source="seg" data-field="highBudgetRate" data-where="role=Parent&amp;sport=All" data-fmt="pct">—</b>。三脚架搭配率教练 <b class="xb-n" data-draw="v" data-source="seg" data-field="tripodRate" data-where="role=Coach&amp;sport=All" data-fmt="pct">—</b>，家长 <b class="xb-n" data-draw="v" data-source="seg" data-field="tripodRate" data-where="role=Parent&amp;sport=All" data-fmt="pct">—</b>。教练给 AI 追踪的平均分也更高（<b class="xb-n" data-draw="v" data-source="seg" data-field="aiTracking" data-where="role=Coach&amp;sport=All" data-fmt="num2">—</b> vs <b class="xb-n" data-draw="v" data-source="seg" data-field="aiTracking" data-where="role=Parent&amp;sport=All" data-fmt="num2">—</b>），他们更会设机位。</p>
+        <p class="xb-act">独立站：给教练/俱乐部单独做 Pro 套装（Falcon + NT4 PRO + 遥控器 + 延保），并加一个多机/团队采购入口。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-parent">
+        <span class="xb-tag">身份 · 家长</span>
+        <h3>家长是 Chameleon 老客升级的主力</h3>
+        <p>家长中 <b class="xb-n" data-draw="v" data-source="seg" data-field="upgraderRate" data-where="role=Parent&amp;sport=All" data-fmt="pct">—</b> 是从 Chameleon 升级到 Falcon 的老客，教练只有 <b class="xb-n" data-draw="v" data-source="seg" data-field="upgraderRate" data-where="role=Coach&amp;sport=All" data-fmt="pct">—</b>。全体升级用户的累计消费 <b class="xb-n" data-draw="v" data-source="seg" data-field="avgSpentUpgraders" data-where="role=All&amp;sport=All" data-fmt="usd">—</b>，新客 <b class="xb-n" data-draw="v" data-source="seg" data-field="avgSpentNew" data-where="role=All&amp;sport=All" data-fmt="usd">—</b>。家长的第二大购买理由是免费直播：拍给不在场的家人看。</p>
+        <p class="xb-act">独立站：常态化以旧换新落地页，邮件/短信定向 Chameleon 老客；家长向素材主打「爷爷奶奶在家也能看直播」。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-soccer-parent">
+        <span class="xb-tag">身份 × 球类 · 足球家长</span>
+        <h3>足球家长最常「只买相机」，却最需要高机位</h3>
+        <p>足球家长的三脚架搭配率只有 <b class="xb-n" data-draw="v" data-source="seg" data-field="tripodRate" data-where="role=Parent&amp;sport=Soccer" data-fmt="pct">—</b>，足球教练是 <b class="xb-n" data-draw="v" data-source="seg" data-field="tripodRate" data-where="role=Coach&amp;sport=Soccer" data-fmt="pct">—</b>。而足球用户最多的抱怨正是追踪跑偏、追到隔壁场的球，这和机位高度直接相关。</p>
+        <p class="xb-act">独立站：足球 PDP 默认选中 Falcon + NT4 套装，旁边放一张「机位高度 vs 追踪效果」示意图，把三脚架讲成追踪效果的一部分。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-basketball">
+        <span class="xb-tag">球类 · 篮球</span>
+        <h3>篮球用户价格敏感、被直播驱动</h3>
+        <p>篮球用户只有 <b class="xb-n" data-draw="v" data-source="seg" data-field="highBudgetRate" data-where="role=All&amp;sport=Basketball" data-fmt="pct">—</b> 预算超过 $800，足球是 <b class="xb-n" data-draw="v" data-source="seg" data-field="highBudgetRate" data-where="role=All&amp;sport=Soccer" data-fmt="pct">—</b>。免费直播是篮球用户的第二大购买理由；他们给 AI 追踪的分数（<b class="xb-n" data-draw="v" data-source="seg" data-field="aiTracking" data-where="role=All&amp;sport=Basketball" data-fmt="num2">—</b>）在主要球类里最低，快攻转换时镜头跟不上。下单前天数中位数 <b class="xb-n" data-draw="v" data-source="seg" data-field="medianDays" data-where="role=All&amp;sport=Basketball" data-fmt="days">—</b>。</p>
+        <p class="xb-act">独立站：篮球落地页主打「免费直播 + 无月费」和基础套装价，别把 AI 追踪说成完美；投放可以更偏促销和赛季节点。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-football">
+        <span class="xb-tag">球类 · 美式/腰旗橄榄球</span>
+        <h3>橄榄球：变焦最不满意，但最愿意买保障</h3>
+        <p>橄榄球用户给自动变焦打 <b class="xb-n" data-draw="v" data-source="seg" data-field="autoZoom" data-where="role=All&amp;sport=Football" data-fmt="num2">—</b> 分，是各球类最低之一；同时他们的保障计划购买率 <b class="xb-n" data-draw="v" data-source="seg" data-field="protectionRate" data-where="role=All&amp;sport=Football" data-fmt="pct">—</b>，在主要球类里最高（全体 <b class="xb-n" data-draw="v" data-source="seg" data-field="protectionRate" data-where="role=All&amp;sport=All" data-fmt="pct">—</b>）。</p>
+        <p class="xb-act">独立站：橄榄球页面诚实说明「美式橄榄球模式仍在优化」，同时把延保/退货保障放在加购第一位。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-niche">
+        <span class="xb-tag">球类 · 冰球 / 排球</span>
+        <h3>小众球类把「AI 分析」当成了卖点，买后才发现不支持</h3>
+        <p>冰球用户给 AI 比赛分析打 <b class="xb-n" data-draw="v" data-source="seg" data-field="gameAnalysis" data-where="role=All&amp;sport=Ice Hockey" data-fmt="num2">—</b> 分，排球 <b class="xb-n" data-draw="v" data-source="seg" data-field="gameAnalysis" data-where="role=All&amp;sport=Volleyball" data-fmt="num2">—</b>，都低于全体的 <b class="xb-n" data-draw="v" data-source="seg" data-field="gameAnalysis" data-where="role=All&amp;sport=All" data-fmt="num2">—</b>。有冰球教练明确说买了才知道冰球不支持 AI 分析。这两类用户的平均消费也偏低（冰球 <b class="xb-n" data-draw="v" data-source="seg" data-field="avgSpent" data-where="role=All&amp;sport=Ice Hockey" data-fmt="usd">—</b>，排球 <b class="xb-n" data-draw="v" data-source="seg" data-field="avgSpent" data-where="role=All&amp;sport=Volleyball" data-fmt="usd">—</b>）。</p>
+        <p class="xb-act">独立站：做一张「各运动支持哪些功能」的矩阵（追踪 / 计分板 / AI 分析 / 集锦），放在 PDP 和 FAQ，直接减少退货和差评。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-channel">
+        <span class="xb-tag">渠道 · 按身份</span>
+        <h3>家长和篮球、橄榄球用户在 Meta 被种草，教练更靠搜索和口碑</h3>
+        <p>说自己最早在 Facebook / Instagram 认识 XbotGo 的：家长 <b class="xb-n" data-draw="v" data-source="seg" data-field="metaRate" data-where="role=Parent&amp;sport=All" data-fmt="pct">—</b>，教练 <b class="xb-n" data-draw="v" data-source="seg" data-field="metaRate" data-where="role=Coach&amp;sport=All" data-fmt="pct">—</b>；橄榄球 <b class="xb-n" data-draw="v" data-source="seg" data-field="metaRate" data-where="role=All&amp;sport=Football" data-fmt="pct">—</b>，篮球 <b class="xb-n" data-draw="v" data-source="seg" data-field="metaRate" data-where="role=All&amp;sport=Basketball" data-fmt="pct">—</b>。但 Shopify 只把 <b class="xb-n" data-draw="v" data-source="seg" data-field="socialFirstRate" data-where="role=All&amp;sport=All" data-fmt="pct">—</b> 的客户首次访问记成社媒，Meta 的贡献被归因低估了。</p>
+        <p class="xb-act">独立站：家长 / 篮球 / 橄榄球素材继续放在 Meta；教练用 Google 搜索、YouTube 测评和俱乐部合作。用这类购后问卷做归因校正，别只看 Shopify 报表砍 Meta。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-speed">
+        <span class="xb-tag">决策 · 全体</span>
+        <h3>说要考虑几个月，到站后却当天就买</h3>
+        <p><b class="xb-n" data-draw="v" data-source="seg" data-field="slowDecisionRate" data-where="role=All&amp;sport=All" data-fmt="pct">—</b> 的人自称要考虑 1–3 个月，但 Shopify 记录里 <b class="xb-n" data-draw="v" data-source="seg" data-field="sameDayRate" data-where="role=All&amp;sport=All" data-fmt="pct">—</b> 的订单是首访当天成交，下单前天数中位数 <b class="xb-n" data-draw="v" data-source="seg" data-field="medianDays" data-where="role=All&amp;sport=All" data-fmt="days">—</b>。研究和比较发生在站外，到独立站时已经决定了。</p>
+        <p class="xb-act">独立站：再营销窗口拉长到 60–90 天并卡赛季前投放；站内重点是减少下单阻力：发货时效、退货政策和「无强制订阅」说清楚。</p>
+      </article>
+
+      <article class="xb-card xb-ins" id="ins-product">
+        <span class="xb-tag">产品 · 全体</span>
+        <h3>最大的购买理由，是评分倒数的功能</h3>
+        <p>AI 追踪是排名第一的购买理由，但它的平均分只有 <b class="xb-n" data-draw="v" data-source="seg" data-field="aiTracking" data-where="role=All&amp;sport=All" data-fmt="num2">—</b>，自动变焦 <b class="xb-n" data-draw="v" data-source="seg" data-field="autoZoom" data-where="role=All&amp;sport=All" data-fmt="num2">—</b>；4K 画质 <b class="xb-n" data-draw="v" data-source="seg" data-field="res4k" data-where="role=All&amp;sport=All" data-fmt="num2">—</b> 分最高。开放题里约三分之一在抱怨追踪。</p>
+        <p class="xb-act">独立站：首屏用真实比赛片段证明 4K、直播和做工；AI 追踪的话术从「全自动」改为「设对机位就很稳」，配机位和边界设置指南。</p>
+      </article>
+
+    </div>
+    <p class="xb-foot">注意：细分人群样本较小（教练 <span data-draw="v" data-source="seg" data-field="n" data-where="role=Coach&amp;sport=All" data-fmt="int">—</span> 人、篮球 <span data-draw="v" data-source="seg" data-field="n" data-where="role=All&amp;sport=Basketball" data-fmt="int">—</span> 人、冰球 <span data-draw="v" data-source="seg" data-field="n" data-where="role=All&amp;sport=Ice%20Hockey" data-fmt="int">—</span> 人、排球 <span data-draw="v" data-source="seg" data-field="n" data-where="role=All&amp;sport=Volleyball" data-fmt="int">—</span> 人），比例适合定方向，不适合做精确预测。多选球类的受访者会同时计入每个球类。少数无法关联到 Shopify 客户的回复未计入。</p>
+  </section>
+
+  <!-- ============ EXPLORE ============ -->
+  <section id="explore" data-page="explore" hidden>
+    <div class="xb-filters" id="filters">
+      <div class="xb-frow" role="group" aria-label="身份">
+        <span class="xb-flabel">身份</span>
+        <button class="xb-chip" data-role="All" aria-pressed="true">全部</button>
+        <button class="xb-chip" data-role="Parent" aria-pressed="false">家长</button>
+        <button class="xb-chip" data-role="Coach" aria-pressed="false">教练</button>
+        <button class="xb-chip" data-role="Player &amp; other" aria-pressed="false">球员/创作者/其他</button>
+      </div>
+      <div class="xb-frow" role="group" aria-label="球类">
+        <span class="xb-flabel">球类</span>
+        <button class="xb-chip" data-sport="All" aria-pressed="true">全部</button>
+        <button class="xb-chip" data-sport="Soccer" aria-pressed="false">足球</button>
+        <button class="xb-chip" data-sport="Basketball" aria-pressed="false">篮球</button>
+        <button class="xb-chip" data-sport="Football" aria-pressed="false">美式/腰旗橄榄球</button>
+        <button class="xb-chip" data-sport="Ice Hockey" aria-pressed="false">冰球</button>
+        <button class="xb-chip" data-sport="Volleyball" aria-pressed="false">排球</button>
+        <button class="xb-chip" data-sport="Baseball" aria-pressed="false">棒垒球</button>
+        <button class="xb-chip" data-sport="Other" aria-pressed="false">其他</button>
+      </div>
+      <div class="xb-fmeta">
+        <span>当前人群 <b class="xb-n" data-draw="kv" data-source="seg" data-field="n" data-fmt="int">—</b> 人</span>
+        <span class="xb-warn" data-small hidden>样本少于 15 人，比例仅供参考</span>
+        <span class="xb-warn" data-none hidden>这个组合没有受访者，换一个看看</span>
+      </div>
+    </div>
+
+    <p class="xb-take" id="takeaway">这群人最常见的购买理由是 <b class="xb-n" data-draw="topcat" data-source="dist" data-dim="reasons">—</b>，最多的抱怨是 <b class="xb-n" data-draw="topcat" data-source="dist" data-dim="themes">—</b>；AI 追踪均分 <b class="xb-n" data-draw="kv" data-source="seg" data-field="aiTracking" data-fmt="num2">—</b>，4K 均分 <b class="xb-n" data-draw="kv" data-source="seg" data-field="res4k" data-fmt="num2">—</b>。</p>
+
+    <div class="xb-kpis" id="kpis">
+      <div class="xb-kpi"><p class="xb-kl">平均累计消费</p><div class="xb-kv" data-draw="kv" data-source="seg" data-field="avgSpent" data-fmt="usd">—</div><p class="xb-ks">Shopify 历史总消费</p></div>
+      <div class="xb-kpi"><p class="xb-kl">预算 $800 以上</p><div class="xb-kv" data-draw="kv" data-source="seg" data-field="highBudgetRate" data-fmt="pct">—</div><p class="xb-ks">问卷最高可接受价格</p></div>
+      <div class="xb-kpi"><p class="xb-kl">三脚架搭配率</p><div class="xb-kv" data-draw="kv" data-source="seg" data-field="tripodRate" data-fmt="pct">—</div><p class="xb-ks">Falcon 订单含 NT4 / NT4 PRO</p></div>
+      <div class="xb-kpi"><p class="xb-kl">保障计划购买率</p><div class="xb-kv" data-draw="kv" data-source="seg" data-field="protectionRate" data-fmt="pct">—</div><p class="xb-ks">延保或 Seel 退货保障</p></div>
+      <div class="xb-kpi"><p class="xb-kl">Chameleon 升级用户</p><div class="xb-kv" data-draw="kv" data-source="seg" data-field="upgraderRate" data-fmt="pct">—</div><p class="xb-ks">之前买过 Chameleon</p></div>
+      <div class="xb-kpi"><p class="xb-kl">首访当天下单</p><div class="xb-kv" data-draw="kv" data-source="seg" data-field="sameDayRate" data-fmt="pct">—</div><p class="xb-ks">Shopify 下单前天数 = 1</p></div>
+    </div>
+
+    <h2 class="xb-sec-title" id="who">人群构成</h2>
+    <div class="xb-grid">
+      <div class="xb-card" id="card-pie-role">
+        <h3>身份比例</h3>
+        <p class="xb-note">在当前球类筛选下，各身份的人数占比；选中的身份会高亮。</p>
+        <div class="xb-chart" data-draw="pie" data-source="seg" data-pie="role"></div>
+        <p class="xb-insight"><span class="xb-il">小结</span>占比最大的是 <b class="xb-n" data-draw="pietop" data-source="seg" data-pie="role">—</b>。<span data-selonly="role">你选中的 <b class="xb-n" data-draw="piesel" data-source="seg" data-pie="role">—</b>。</span>家长和教练是两大核心人群，素材和落地页应分开做。</p>
+      </div>
+      <div class="xb-card" id="card-pie-sport">
+        <h3>球类比例</h3>
+        <p class="xb-note">在当前身份筛选下，各球类的提及次数占比（拍多项运动的人会计入每个球类）。</p>
+        <div class="xb-chart" data-draw="pie" data-source="seg" data-pie="sport"></div>
+        <p class="xb-insight"><span class="xb-il">小结</span>提及最多的是 <b class="xb-n" data-draw="pietop" data-source="seg" data-pie="sport">—</b>。<span data-selonly="sport">你选中的 <b class="xb-n" data-draw="piesel" data-source="seg" data-pie="sport">—</b>。</span>足球之外的球类样本较小，比例看方向即可。</p>
+      </div>
+    </div>
+
+    <h2 class="xb-sec-title" id="why">为什么买</h2>
+    <div class="xb-card" id="card-reasons">
+      <h3>购买理由</h3>
+      <p class="xb-note">选择 XbotGo 而不是其他品牌的原因（多选）。「无订阅 / 价格」不在选项里，来自用户在「其他」里自己写的答案。</p>
+      <div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="reasons" data-top="12"></div>
+      <p class="xb-insight"><span class="xb-il">小结</span>最打动这群人的是 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="reasons" data-rank="0" data-show="labelshare">—</b> 和 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="reasons" data-rank="1" data-show="labelshare">—</b>。<span data-segonly>和全体相比，他们更看重 <b class="xb-n" data-draw="lift" data-source="lift" data-dim="reasons">—</b>。</span>「无订阅 / 价格」不是选项，却有 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="reasons" data-cat="No subscription / price" data-show="share">—</b> 的人主动写了出来，它是被低估的核心卖点，应该放进首屏。</p>
+    </div>
+
+    <h2 class="xb-sec-title" id="rate">用得怎么样</h2>
+    <div class="xb-card" id="card-ratings">
+      <h3>功能评分</h3>
+      <p class="xb-note">1–5 星平均分，从最不满意到最满意排列。亮色表示不满意，灰色表示满意；虚线是 3.5 星警戒线。悬停可看打 1–2 星的比例。</p>
+      <div class="xb-chart" data-draw="ratings" data-source="ratings"></div>
+      <div class="xb-legend"><span><i class="xb-sw xb-sw-crit"></i>不满意（低于 3.5）</span><span><i class="xb-sw xb-sw-warm"></i>一般（3.5–4.0）</span><span><i class="xb-sw xb-sw-mid"></i>满意（4.0 及以上）</span></div>
+      <p class="xb-insight"><span class="xb-il">小结</span>最不满意的是 <b class="xb-n" data-draw="fv" data-source="ratings" data-pick="low" data-show="label">—</b>（<b class="xb-n" data-draw="fv" data-source="ratings" data-pick="low" data-show="mean">—</b> 星，<b class="xb-n" data-draw="fv" data-source="ratings" data-pick="low" data-show="low">—</b> 打 1–2 星），最满意的是 <b class="xb-n" data-draw="fv" data-source="ratings" data-pick="high" data-show="label">—</b>（<b class="xb-n" data-draw="fv" data-source="ratings" data-pick="high" data-show="mean">—</b> 星）。AI 追踪是排名第一的购买理由，这群人给它 <b class="xb-n" data-draw="fv" data-source="ratings" data-feature="AI tracking" data-show="mean">—</b> 星（全体 <b class="xb-n" data-draw="v" data-source="ratings" data-field="mean" data-where="role=All&amp;sport=All&amp;feature=AI%20tracking" data-fmt="num2">—</b>）。买家最在意的功能离预期还有差距，站内话术要避免过度承诺，并把满意度高的功能放到前面。</p>
+    </div>
+
+    <h2 class="xb-sec-title" id="how">怎么找到我们，多快决定</h2>
+    <div class="xb-grid">
+      <div class="xb-card" id="card-channel">
+        <h3>认知渠道：自述 vs Shopify 记录</h3>
+        <p class="xb-note">左：问卷「最早从哪里知道 XbotGo」。右：Shopify 记录的首次访问来源。</p>
+        <div class="xb-two">
+          <div><p class="xb-sub">问卷自述</p><div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="channel" data-top="8"></div></div>
+          <div><p class="xb-sub">Shopify 首次访问</p><div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="firstTouch" data-top="8"></div></div>
+        </div>
+        <p class="xb-insight"><span class="xb-il">小结</span><b class="xb-n" data-draw="kv" data-source="seg" data-field="metaRate" data-fmt="pct">—</b> 的人说最早在 Facebook / Instagram 认识我们，但 Shopify 只把 <b class="xb-n" data-draw="kv" data-source="seg" data-field="socialFirstRate" data-fmt="pct">—</b> 记为社媒首访，其余被记成了搜索或直接访问。判断 Meta 投放效果时，要用这类购后问卷校正归因。</p>
+      </div>
+      <div class="xb-card" id="card-decision">
+        <h3>决策周期：自述 vs 实际</h3>
+        <p class="xb-note">左：问卷自述的决策时间。右：Shopify 记录的首次访问到下单天数（最长回看 30 天）。</p>
+        <div class="xb-two">
+          <div><p class="xb-sub">问卷自述</p><div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="decision" data-order="1"></div></div>
+          <div><p class="xb-sub">Shopify 下单前天数</p><div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="daysBucket" data-order="1"></div></div>
+        </div>
+        <p class="xb-insight"><span class="xb-il">小结</span><b class="xb-n" data-draw="kv" data-source="seg" data-field="slowDecisionRate" data-fmt="pct">—</b> 自称要考虑 1–3 个月，但 <b class="xb-n" data-draw="kv" data-source="seg" data-field="sameDayRate" data-fmt="pct">—</b> 在首访当天就下单（中位数 <b class="xb-n" data-draw="kv" data-source="seg" data-field="medianDays" data-fmt="days">—</b>）。研究和比较发生在站外，再营销要拉长到 60–90 天并卡赛季前；站内的重点是减少下单阻力。</p>
+      </div>
+    </div>
+
+    <h2 class="xb-sec-title" id="money">价格、购物篮与剪辑</h2>
+    <div class="xb-grid">
+      <div class="xb-card" id="card-budget">
+        <h3>最高可接受价格</h3>
+        <p class="xb-note">问卷：愿意为体育追踪相机花的最高金额。</p>
+        <div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="budget" data-order="1"></div>
+        <p class="xb-insight"><span class="xb-il">小结</span><b class="xb-n" data-draw="kv" data-source="seg" data-field="highBudgetRate" data-fmt="pct">—</b> 能接受 $800 以上，最集中的区间是 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="budget" data-rank="0" data-show="labelshare">—</b>。高预算人群多时，适合推 Pro 套装拉高客单价。</p>
+      </div>
+      <div class="xb-card" id="card-attach">
+        <h3>Falcon 订单里还买了什么</h3>
+        <p class="xb-note">Shopify 订单：配件和保障的搭配比例。</p>
+        <div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="attach" data-order="1"></div>
+        <p class="xb-insight"><span class="xb-il">小结</span><b class="xb-n" data-draw="kv" data-source="seg" data-field="tripodRate" data-fmt="pct">—</b> 配了三脚架，<b class="xb-n" data-draw="kv" data-source="seg" data-field="protectionRate" data-fmt="pct">—</b> 买了保障计划，遥控器只有 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="attach" data-cat="Remote control" data-show="share">—</b>。三脚架应做成默认套装，保障计划和遥控器还有加购空间。</p>
+      </div>
+      <div class="xb-card" id="card-edit">
+        <h3>剪辑习惯</h3>
+        <p class="xb-note">上：录完会不会剪。下：用什么工具剪（只问了会剪的人）。</p>
+        <div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="edit" data-order="1"></div>
+        <p class="xb-sub" style="margin-top: var(--cds-gap-md)">剪辑工具</p>
+        <div class="xb-chart" data-draw="hbar" data-source="dist" data-dim="editTool" data-top="8"></div>
+        <p class="xb-insight"><span class="xb-il">小结</span><b class="xb-n" data-draw="kv" data-source="seg" data-field="noEditRate" data-fmt="pct">—</b> 很少或从不剪辑；会剪的人最常用 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="editTool" data-rank="0" data-show="labelshare">—</b>。自动集锦和 App 内剪辑比第三方工具更能打动这群人。</p>
+      </div>
+    </div>
+
+    <h2 class="xb-sec-title" id="improve">需要注意的改进建议</h2>
+    <p class="xb-sec-note">开放题「如何改进 XbotGo」按主题归类，按当前人群的提及人数从多到少排列，下面附用户原话（英文原文）。10 人及以上提及标为高优先级，4–9 人为中优先级。</p>
+    <p class="xb-insight xb-insight-wide"><span class="xb-il">小结</span>当前人群有 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-rank="0" data-show="base">—</b> 人写了有效建议，提及最多的是 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-rank="0" data-show="labelshare">—</b> 和 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-rank="1" data-show="labelshare">—</b>。追踪和变焦是产品问题，但站内的预期管理和设置教程能直接减少差评与退货。</p>
+    <div class="xb-improve">
+      <article class="xb-card xb-imp" data-theme="Tracking accuracy">
+        <div class="xb-imphead"><h3>追踪准确度</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Tracking accuracy" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Tracking accuracy" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>镜头追到隔壁场地或场外的球；快攻和攻防转换时转向慢；自动居中后偏离比赛区域，即使设了边界也会跑。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>产品优先修复多球干扰和转向速度；站内把「机位高度 + 边界设置」做成购买前的教程，话术从「全自动」改成「设对机位就很稳」。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Tracking accuracy"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Auto-zoom">
+        <div class="xb-imphead"><h3>自动变焦</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Auto-zoom" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Auto-zoom" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>球在远端、边路或射门时变焦不够近；变焦后画质下降；橄榄球场景变焦尤其不稳。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>变焦逻辑按球类分别调优；页面用真实比赛片段展示变焦效果，不要用理想化演示。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Auto-zoom"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Setup &amp; boundaries">
+        <div class="xb-imphead"><h3>设置与边界</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Setup &amp; boundaries" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Setup &amp; boundaries" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>新版自动扫描场地不如以前手动选角点好用；开机扫描时要反复转底座；机位不在中线时追踪明显变差。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>恢复手动划边界选项；在产品页和快速上手指南里加一段 60 秒设置视频。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Setup &amp; boundaries"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Sport-specific modes">
+        <div class="xb-imphead"><h3>专项运动模式</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Sport-specific modes" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Sport-specific modes" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>冰球买了才发现没有 AI 分析；曲棍球角球、足球点球识别不准；橄榄球（Rugby）、无板篮球、棒垒球想要专属模式；高中足球需要倒计时。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>上线「各运动支持哪些功能」矩阵，放在产品页和 FAQ，买前就说清楚，减少因预期不符的退货。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Sport-specific modes"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Editing &amp; highlights">
+        <div class="xb-imphead"><h3>剪辑与集锦</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Editing &amp; highlights" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Editing &amp; highlights" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>想要 App 内剪辑和更好的自动集锦，最好能在电脑上编辑；每周多场比赛的球队觉得按场付费分析太贵，没时间剪就干脆不拍。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>用赛季包或年费包代替按场收费；把自动集锦做成家长和教练都能直接分享的卖点。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Editing &amp; highlights"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Transfer / storage">
+        <div class="xb-imphead"><h3>传输与存储</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Transfer / storage" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Transfer / storage" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>导出到手机太慢，一场 1 小时的比赛要传 1 小时；占手机空间；希望用 USB-C 直传或内置存储，而不是 SD 卡。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>FAQ 写清各种传输方式和大概时间；产品层面考虑 USB-C 有线导出。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Transfer / storage"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="How-to content &amp; support">
+        <div class="xb-imphead"><h3>教程与客服</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="How-to content &amp; support" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="How-to content &amp; support" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>新功能说明难找；不知道怎么直播、上传和分享；提了工单一直没人回复。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>官网建一个按球类分的教程中心；把售后响应时效写在页面上并兑现。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="How-to content &amp; support"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Player-specific tracking">
+        <div class="xb-imphead"><h3>指定球员追踪</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Player-specific tracking" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Player-specific tracking" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>家长希望通过号码识别只追自己孩子；教练想要单个球员的集锦和数据。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>这是下一代的核心卖点：可以先在网站上收集「想要这个功能」的邮件名单，同时验证需求。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Player-specific tracking"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Subscription / pricing">
+        <div class="xb-imphead"><h3>订阅与收费</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Subscription / pricing" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Subscription / pricing" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>「无订阅」是当初购买的理由，后来云存储和 AI 分析开始收费，被认为是背叛承诺，和 Veo、Trace 没区别了。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>首屏写清「核心功能永久免费、无强制订阅」，付费项标为可选，并给出和 Veo/Trace 的年度总成本对比。提及人数不多，但情绪最强烈，最容易变成公开差评。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Subscription / pricing"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Firmware updates">
+        <div class="xb-imphead"><h3>固件更新</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Firmware updates" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Firmware updates" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>到了比赛现场被强制更新固件和 App，耽误开拍；但也有人说固件更新后追踪在变好。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>允许预约或延后更新；每次更新的改进点通过邮件推送，让用户感知到产品在进步。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Firmware updates"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Scoreboard">
+        <div class="xb-imphead"><h3>计分板</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Scoreboard" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Scoreboard" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>排球缺少局数显示，重置比分要一下下点减号；高中足球需要倒计时；配色选项比旧版少。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>计分板按球类做模板，作为直播的卖点在页面上展示。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Scoreboard"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Audio">
+        <div class="xb-imphead"><h3>收音</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Audio" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Audio" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>Falcon 的麦克风太敏感，直播时有爆音，观众听不清解说。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>固件优化收音；配件页可以给出外接麦克风方案。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Audio"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Live streaming">
+        <div class="xb-imphead"><h3>直播</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Live streaming" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Live streaming" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>希望开播流程更简单、直播画质能超过 1080p、直播观看的说明更清楚。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>做一个 3 步开播教程；直播是家长的核心卖点，开播体验要先做顺。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Live streaming"></ul>
+      </article>
+      <article class="xb-card xb-imp" data-theme="Remote control">
+        <div class="xb-imphead"><h3>遥控器</h3><span class="xb-pri" data-draw="pri" data-source="dist">—</span></div>
+        <p class="xb-impcount"><b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Remote control" data-show="n">—</b> 人提及 · 占写了建议的 <b class="xb-n" data-draw="dv" data-source="dist" data-dim="themes" data-cat="Remote control" data-show="share">—</b></p>
+        <p class="xb-impwhat"><span class="xb-il2">整体反馈</span>希望 Falcon 有遥控器，可以手动控制变焦和转向。</p>
+        <p class="xb-act"><span class="xb-il2">建议</span>确认 BLE 遥控器和 Falcon 的兼容性，在产品页写清楚并放进加购推荐；目前很少有订单带遥控器。</p>
+        <ul class="xb-comments xb-quotes" data-draw="quotes" data-source="survey" data-theme="Remote control"></ul>
+      </article>
+    </div>
+  </section>
+
+  <!-- ============ COMPARE ============ -->
+  <section id="compare" data-page="compare" hidden>
+    <div class="xb-card" id="card-segtable">
+      <h3>各人群关键指标</h3>
+      <p class="xb-note">每行一个人群（身份或球类）。绿色/红色标出比全体明显高或低的值（相差 10 个百分点或 0.3 分以上）。点表头排序。</p>
+      <div class="xb-tablewrap">
+        <table class="xb-table" data-source="seg" data-row-key="role,sport">
+          <thead><tr>
+            <th data-field="role" data-sort="label">身份</th>
+            <th data-field="sport" data-sort="label">球类</th>
+            <th data-field="n" data-sort="n">人数</th>
+            <th data-field="avgSpent" data-sort="avgSpent">平均消费</th>
+            <th data-field="highBudgetRate" data-sort="highBudgetRate">预算&gt;$800</th>
+            <th data-field="tripodRate" data-sort="tripodRate">三脚架</th>
+            <th data-field="protectionRate" data-sort="protectionRate">保障计划</th>
+            <th data-field="upgraderRate" data-sort="upgraderRate">老客升级</th>
+            <th data-field="metaRate" data-sort="metaRate">Meta 认知</th>
+            <th data-field="sameDayRate" data-sort="sameDayRate">当天下单</th>
+            <th data-field="aiTracking" data-sort="aiTracking">AI 追踪</th>
+            <th data-field="autoZoom" data-sort="autoZoom">自动变焦</th>
+            <th data-field="res4k" data-sort="res4k">4K</th>
+          </tr></thead>
+          <tbody data-draw="segtable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="xb-card" id="card-heat" style="margin-top: var(--cds-gap-md)">
+      <h3>功能评分热力图</h3>
+      <p class="xb-note">每格是该人群对该功能的平均星级。越红越不满意，越蓝越满意；格子里样本少于 5 人的变淡。</p>
+      <div class="xb-chart" data-draw="heat" data-source="ratings"></div>
+    </div>
+
+    <div class="xb-card" id="card-reasonheat" style="margin-top: var(--cds-gap-md)">
+      <h3>购买理由 × 人群</h3>
+      <p class="xb-note">每格是该人群中选了这个理由的比例，可以直接看出不同人群被什么打动。</p>
+      <div class="xb-chart" data-draw="reasonheat" data-source="dist"></div>
+    </div>
+    <p class="xb-foot">「美式/腰旗橄榄球」合并了 Football 和 Flag Football；「其他」含长曲棍球、橄榄球（Rugby）、无板篮球、曲棍球等。「球员/创作者/其他」合并了球员自拍、内容创作者和爱好者。</p>
+  </section>
+</div>
+
+<script>
+/* ---------- calculations ---------- */
+dash.calc('members', {
+  inputs: ['survey'],
+  title: 'Respondents by segment',
+  description: 'Each respondent listed once for every segment they fall in: their role or All, crossed with each sport they film or All.',
+  fn: (survey) => {
+    const out = [];
+    for (const r of survey) {
+      const sports = String(r.sports || '').split('|').filter(Boolean);
+      for (const role of ['All', r.role]) for (const sport of ['All', ...sports]) out.push({ role, sport, id: String(r.id) });
+    }
+    return out;
+  },
+});
+
+dash.calc('seg', {
+  inputs: ['survey', 'members'],
+  title: 'Segment metrics',
+  description: 'Per role × sport segment: size, average lifetime spend, share with each answer or order item, median days to convert and average star ratings.',
+  fn: (survey, members) => {
+    const byId = new Map(survey.map((r) => [String(r.id), r]));
+    const groups = new Map();
+    for (const m of members) {
+      const k = m.role + '\u0001' + m.sport;
+      if (!groups.has(k)) groups.set(k, { role: m.role, sport: m.sport, list: [] });
+      groups.get(k).list.push(byId.get(m.id));
+    }
+    const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+    const mean = (xs) => { const v = xs.filter((x) => x !== null && !isNaN(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+    const share = (list, has, ok) => { const d = list.filter(has); return d.length ? d.filter(ok).length / d.length : null; };
+    const median = (xs) => { const v = xs.filter((x) => x !== null && !isNaN(x)).sort((a, b) => a - b); if (!v.length) return null; const h = Math.floor(v.length / 2); return v.length % 2 ? v[h] : (v[h - 1] + v[h]) / 2; };
+    const r3 = (x) => (x === null ? null : Math.round(x * 1000) / 1000);
+    const yes = (v) => v === 1 || v === '1' || v === true || v === 'true';
+    const out = [];
+    for (const g of groups.values()) {
+      const L = g.list;
+      const all = () => true;
+      out.push({
+        role: g.role, sport: g.sport, n: L.length,
+        avgSpent: r3(mean(L.map((r) => num(r.spent)))),
+        avgSpentUpgraders: r3(mean(L.filter((r) => yes(r.upgrader)).map((r) => num(r.spent)))),
+        avgSpentNew: r3(mean(L.filter((r) => !yes(r.upgrader)).map((r) => num(r.spent)))),
+        highBudgetRate: r3(share(L, (r) => r.budget && r.budget !== 'Unknown', (r) => ['$800-$1025', '$1025-$1250', 'Above $1250'].includes(r.budget))),
+        tripodRate: r3(share(L, all, (r) => r.tripod && r.tripod !== 'None')),
+        protectionRate: r3(share(L, all, (r) => yes(r.protection))),
+        upgraderRate: r3(share(L, all, (r) => yes(r.upgrader))),
+        metaRate: r3(share(L, (r) => r.channel && r.channel !== 'Unknown', (r) => r.channel === 'Facebook' || r.channel === 'Instagram')),
+        socialFirstRate: r3(share(L, (r) => r.firstTouch && r.firstTouch !== 'Unknown', (r) => r.firstTouch === 'Social (Meta)')),
+        sameDayRate: r3(share(L, (r) => num(r.daysToConvert) !== null, (r) => num(r.daysToConvert) <= 1)),
+        noEditRate: r3(share(L, (r) => r.edit && r.edit !== 'Unknown', (r) => r.edit === 'Rarely (share full)' || r.edit === 'No (auto/raw)')),
+        slowDecisionRate: r3(share(L, (r) => r.decision && r.decision !== 'Unknown', (r) => r.decision === '1–3 months')),
+        medianDays: median(L.map((r) => num(r.daysToConvert))),
+        aiTracking: r3(mean(L.map((r) => num(r['r_AI tracking'])))),
+        autoZoom: r3(mean(L.map((r) => num(r['r_Auto-zoom'])))),
+        res4k: r3(mean(L.map((r) => num(r['r_4K resolution'])))),
+        gameAnalysis: r3(mean(L.map((r) => num(r['r_AI game analysis'])))),
+      });
+    }
+    return out;
+  },
+});
+
+dash.calc('dist', {
+  inputs: ['survey', 'members'],
+  title: 'Answer shares by segment',
+  description: 'Per segment and question: how many chose each answer, and that count as a share of the segment members who answered the question.',
+  fn: (survey, members) => {
+    const byId = new Map(survey.map((r) => [String(r.id), r]));
+    const yes = (v) => v === 1 || v === '1' || v === true || v === 'true';
+    const days = (r) => { const d = r.daysToConvert === null || r.daysToConvert === '' || r.daysToConvert === undefined ? null : Number(r.daysToConvert); return d === null ? [] : [d <= 1 ? 'Same day' : d <= 7 ? '2–7 days' : d <= 14 ? '8–14 days' : '15–30 days']; };
+    const split = (v) => String(v || '').split('|').filter(Boolean);
+    const one = (v) => (v && v !== 'Unknown' ? [v] : []);
+    const dims = {
+      reasons: (r) => split(r.reasons),
+      channel: (r) => one(r.channel),
+      firstTouch: (r) => one(r.firstTouch),
+      decision: (r) => one(r.decision),
+      daysBucket: days,
+      budget: (r) => one(r.budget),
+      edit: (r) => one(r.edit),
+      editTool: (r) => one(r.editTool),
+      themes: (r) => split(r.themes),
+      attach: (r) => [r.tripod && r.tripod !== 'None' ? 'Tripod (any)' : null, r.tripod === 'NT4 PRO' ? 'NT4 PRO tripod' : null, yes(r.protection) ? 'Protection plan' : null, yes(r.extWarranty) ? 'Extended warranty' : null, yes(r.seel) ? 'Seel return protection' : null, yes(r.umbrella) ? 'Umbrella' : null, yes(r.remote) ? 'Remote control' : null].filter(Boolean),
+    };
+    const answeredAll = { attach: true };
+    const groups = new Map();
+    for (const m of members) {
+      const k = m.role + '\u0001' + m.sport;
+      if (!groups.has(k)) groups.set(k, { role: m.role, sport: m.sport, list: [] });
+      groups.get(k).list.push(byId.get(m.id));
+    }
+    const out = [];
+    for (const g of groups.values()) {
+      for (const [dim, f] of Object.entries(dims)) {
+        const counts = new Map();
+        let base = 0;
+        for (const r of g.list) {
+          const cats = f(r);
+          if (cats.length || answeredAll[dim]) base++;
+          for (const c of cats) counts.set(c, (counts.get(c) || 0) + 1);
+        }
+        for (const [cat, n] of counts) out.push({ role: g.role, sport: g.sport, dim, cat, n, base, share: Math.round((n / base) * 1000) / 1000 });
+      }
+    }
+    return out;
+  },
+});
+
+dash.calc('ratings', {
+  inputs: ['survey', 'members'],
+  title: 'Feature ratings by segment',
+  description: 'Per segment and feature: average star rating (1–5), share rating it 1–2 stars, and how many rated it.',
+  fn: (survey, members) => {
+    const byId = new Map(survey.map((r) => [String(r.id), r]));
+    const feats = ['AI tracking', 'Auto-zoom', 'AI game analysis', 'Auto highlights', '20GB cloud', 'Sports modes', 'Easy setup', 'Battery life', 'Live streaming', 'Build quality', 'Water resistant', '4K resolution'];
+    const acc = new Map();
+    for (const m of members) {
+      const r = byId.get(m.id);
+      for (const f of feats) {
+        const v = r['r_' + f];
+        if (v === null || v === undefined || v === '') continue;
+        const k = m.role + '\u0001' + m.sport + '\u0001' + f;
+        if (!acc.has(k)) acc.set(k, { role: m.role, sport: m.sport, feature: f, sum: 0, low: 0, n: 0 });
+        const a = acc.get(k); a.sum += Number(v); a.n++; if (Number(v) <= 2) a.low++;
+      }
+    }
+    return [...acc.values()].map((a) => ({ role: a.role, sport: a.sport, feature: a.feature, mean: Math.round((a.sum / a.n) * 1000) / 1000, lowShare: Math.round((a.low / a.n) * 1000) / 1000, n: a.n }));
+  },
+});
+
+dash.calc('response', {
+  inputs: ['survey'],
+  title: 'Survey response rate',
+  description: 'Matched survey responses divided by the 2,400 invitation emails sent.',
+  fn: (survey) => {
+    const sent = 2400;
+    return [{ key: 'all', sent, respondents: survey.length, rate: Math.round((survey.length / sent) * 10000) / 10000 }];
+  },
+});
+
+dash.calc('lift', {
+  inputs: ['dist'],
+  title: 'Answer share vs everyone',
+  description: 'For each segment, question and answer: the segment share minus the share among all respondents (in share points).',
+  fn: (dist) => {
+    const all = new Map(dist.filter((r) => r.role === 'All' && r.sport === 'All').map((r) => [r.dim + '\u0001' + r.cat, Number(r.share)]));
+    return dist.filter((r) => !(r.role === 'All' && r.sport === 'All')).map((r) => {
+      const a = all.get(r.dim + '\u0001' + r.cat) || 0;
+      return { role: r.role, sport: r.sport, dim: r.dim, cat: r.cat, n: r.n, share: r.share, allShare: a, lift: Math.round((Number(r.share) - a) * 1000) / 1000 };
+    });
+  },
+});
+</script>
+
+<script>
+/* ---------- shared helpers ---------- */
+window.XB = (() => {
+  const LABEL = {
+    // roles & sports
+    'All': '全部', 'Parent': '家长', 'Coach': '教练', 'Player & other': '球员/创作者/其他',
+    'Soccer': '足球', 'Basketball': '篮球', 'Football': '美式/腰旗橄榄球', 'Ice Hockey': '冰球', 'Volleyball': '排球', 'Baseball': '棒垒球', 'Other': '其他',
+    // reasons
+    'Advanced AI Tracking': 'AI 追踪', '4K resolution': '4K 画质', 'Free live streaming': '免费直播', 'Intelligent Auto-Zoom': '智能变焦', 'Multiple sports modes': '多运动模式',
+    'Easy and intuitive setup': '设置简单', 'Long battery life': '续航长', 'Water resistant': '防水', 'Free 20GB Cloud Storage': '20GB 免费云存储', 'Saw it at a match': '赛场亲眼看到',
+    'Online advertisement': '线上广告', 'Durable and reliable hardware': '硬件耐用', 'Auto-highlight generation': '自动集锦', 'Recommendation': '他人推荐', 'No subscription / price': '无订阅 / 价格',
+    // channels
+    'Google Search': 'Google 搜索', 'Facebook': 'Facebook', 'Instagram': 'Instagram', 'Word of mouth / Club': '口碑 / 俱乐部 / 赛场', 'YouTube': 'YouTube', 'Online ads': '线上广告', 'Forum': '论坛', 'TikTok': 'TikTok', 'AI assistant': 'AI 助手',
+    'Search': '搜索引擎', 'Direct': '直接访问', 'Social (Meta)': '社媒（Meta）',
+    // decision
+    '≤1 week': '1 周内', '≤1 month': '1 个月内', '1–3 months': '1–3 个月',
+    'Same day': '当天', '2–7 days': '2–7 天', '8–14 days': '8–14 天', '15–30 days': '15–30 天',
+    // attach
+    'Tripod (any)': '三脚架（任意）', 'NT4 PRO tripod': 'NT4 PRO 三脚架', 'Protection plan': '保障计划（任意）', 'Extended warranty': '延保 Product Protection', 'Seel return protection': 'Seel 退货保障', 'Umbrella': '遮阳伞', 'Remote control': '遥控器',
+    // edit
+    'Rarely (share full)': '很少剪，直接分享全场', 'Always edit': '总是剪辑', 'Basic trim': '只简单裁剪', 'No (auto/raw)': '不剪，用自动片段或原片',
+    'XbotGo App': 'XbotGo App', 'CapCut': 'CapCut', 'iMovie': 'iMovie', 'YouTube Studio': 'YouTube Studio', 'Clipchamp': 'Clipchamp', 'Pro editors': '专业软件（PR/达芬奇/FCP）',
+    // themes
+    'Tracking accuracy': '追踪准确度', 'Auto-zoom': '自动变焦', 'Player-specific tracking': '指定球员追踪', 'Editing & highlights': '剪辑与集锦', 'Subscription / pricing': '订阅与收费',
+    'Audio': '收音', 'Setup & boundaries': '设置与边界', 'Sport-specific modes': '专项运动模式', 'Firmware updates': '固件更新', 'Transfer / storage': '传输与存储',
+    'How-to content & support': '教程与客服', 'Scoreboard': '计分板', 'Live streaming': '直播',
+    // features
+    'AI tracking': 'AI 追踪', 'AI game analysis': 'AI 比赛分析', 'Auto highlights': '自动集锦', '20GB cloud': '20GB 云存储', 'Sports modes': '多运动模式', 'Easy setup': '设置简单', 'Battery life': '续航', 'Build quality': '做工', 'Live streaming ': '直播',
+  };
+  const ORDER = {
+    decision: ['≤1 week', '≤1 month', '1–3 months'],
+    daysBucket: ['Same day', '2–7 days', '8–14 days', '15–30 days'],
+    budget: ['Below $340', '$340-$570', '$570-$800', '$800-$1025', '$1025-$1250', 'Above $1250'],
+    attach: ['Tripod (any)', 'NT4 PRO tripod', 'Protection plan', 'Extended warranty', 'Seel return protection', 'Umbrella', 'Remote control'],
+    edit: ['Rarely (share full)', 'Always edit', 'Basic trim', 'No (auto/raw)'],
+  };
+  const lab = (k) => (LABEL[k] !== undefined ? LABEL[k] : k);
+  const pct = d3.format('.0%');
+  const fmt = (v, f) => {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return '—';
+    v = Number(v);
+    if (f === 'pct') return pct(v);
+    if (f === 'pct1') return d3.format('.1%')(v);
+    if (f === 'num2') return v.toFixed(2);
+    if (f === 'usd') return '$' + d3.format(',.0f')(v);
+    if (f === 'days') return d3.format('.1~f')(v) + ' 天';
+    return d3.format(',')(v);
+  };
+  const seg = () => {
+    const p = dash.params();
+    return { role: p.role || 'All', sport: p.sport || 'All' };
+  };
+  const enc = (s) => String(s).replace(/%/g, '%25').replace(/&/g, '%26').replace(/=/g, '%3D');
+  const whereOf = (o) => Object.entries(o).map(([k, v]) => enc(k) + '=' + enc(v)).join('&');
+  const css = (el, name) => getComputedStyle(el).getPropertyValue(name).trim();
+  const tipFor = (el) => {
+    let t = el.querySelector(':scope > .xb-tip');
+    if (!t) { t = document.createElement('div'); t.className = 'xb-tip'; t.hidden = true; el.appendChild(t); }
+    return t;
+  };
+  const showTip = (el, t, event, title, lines) => {
+    t.replaceChildren();
+    const h = document.createElement('div'); h.className = 'xb-tt'; h.textContent = title; t.appendChild(h);
+    for (const l of lines) { const d = document.createElement('div'); d.textContent = l; t.appendChild(d); }
+    t.hidden = false;
+    const box = el.getBoundingClientRect();
+    const x = event.clientX - box.left, y = event.clientY - box.top;
+    const w = t.offsetWidth, hgt = t.offsetHeight;
+    t.style.left = Math.max(0, Math.min(box.width - w, x + 12)) + 'px';
+    t.style.top = Math.max(0, y - hgt - 8) + 'px';
+  };
+  const textW = (svg, s, cls) => {
+    const t = svg.append('text').attr('class', cls || '').attr('font-size', 12).text(s);
+    const w = t.node().getComputedTextLength(); t.remove(); return w;
+  };
+  return { lab, ORDER, fmt, seg, whereOf, css, tipFor, showTip, textW, pct };
+})();
+</script>
+
+<script>
+/* ---------- tabs & filters (listen / set state only) ---------- */
+(() => {
+  const showTab = (name) => {
+    document.querySelectorAll('[data-page]').forEach((s) => { s.hidden = s.dataset.page !== name; });
+    document.querySelectorAll('.xb-tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+    dash.setLink(name);
+  };
+  document.querySelectorAll('.xb-tab').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+  const hash = location.hash.slice(1);
+  if (['insights', 'explore', 'compare'].includes(hash)) showTab(hash);
+  document.querySelectorAll('[data-role]').forEach((b) => b.addEventListener('click', () => dash.setParams({ role: b.dataset.role, theme: null })));
+  document.querySelectorAll('[data-sport]').forEach((b) => b.addEventListener('click', () => dash.setParams({ sport: b.dataset.sport, theme: null })));
+  dash.onData(() => {
+    const { role, sport } = XB.seg();
+    document.querySelectorAll('[data-role]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.role === role)));
+    document.querySelectorAll('[data-sport]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sport === sport)));
+    const s = dash.data('seg');
+    const row = s.status === 'ok' ? s.data.find((r) => r.role === role && r.sport === sport) : null;
+    const n = row ? Number(row.n) : 0;
+    document.querySelectorAll('[data-small]').forEach((e) => { e.hidden = !(s.status === 'ok' && n > 0 && n < 15); });
+    document.querySelectorAll('[data-none]').forEach((e) => { e.hidden = !(s.status === 'ok' && !row); });
+    document.querySelectorAll('[data-segonly]').forEach((e) => { e.hidden = role === 'All' && sport === 'All'; });
+    document.querySelectorAll('[data-selonly]').forEach((e) => { e.hidden = (e.dataset.selonly === 'role' ? role : sport) === 'All'; });
+    const d = dash.data('dist');
+    document.querySelectorAll('.xb-imp[data-theme]').forEach((a) => {
+      if (d.status !== 'ok') { a.hidden = false; a.style.order = ''; return; }
+      const r = d.data.find((x) => x.role === role && x.sport === sport && x.dim === 'themes' && x.cat === a.dataset.theme);
+      a.hidden = !r;
+      a.style.order = r ? String(1000 - Number(r.n)) : '';
+    });
+  });
+})();
+</script>
+
+<script>
+/* ---------- drawings ---------- */
+(() => {
+  const rowsOf = (id) => { const d = dash.data(id); return d.status === 'ok' ? d.data : null; };
+
+  // fixed value from a fixed row
+  dash.draw('v', (el) => {
+    const rows = rowsOf(el.dataset.source);
+    if (!rows) { el.textContent = '—'; return; }
+    const p = new URLSearchParams(el.dataset.where.replace(/&amp;/g, '&'));
+    const row = rows.find((r) => [...p].every(([k, v]) => String(r[k]) === v));
+    el.textContent = row ? XB.fmt(row[el.dataset.field], el.dataset.fmt) : '—';
+  });
+
+  // value for the filtered segment
+  dash.draw('kv', (el) => {
+    const { role, sport } = XB.seg();
+    el.setAttribute('data-where', XB.whereOf({ role, sport }));
+    const rows = rowsOf(el.dataset.source);
+    const row = rows ? rows.find((r) => r.role === role && r.sport === sport) : null;
+    el.textContent = row ? XB.fmt(row[el.dataset.field], el.dataset.fmt) : '—';
+  });
+
+  // top category of a question for the filtered segment
+  dash.draw('topcat', (el) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('dist');
+    const list = rows ? rows.filter((r) => r.role === role && r.sport === sport && r.dim === el.dataset.dim).sort((a, b) => b.n - a.n) : [];
+    if (!list.length) { el.textContent = '—'; el.removeAttribute('data-where'); el.removeAttribute('data-field'); return; }
+    el.setAttribute('data-where', XB.whereOf({ role, sport, dim: el.dataset.dim, cat: list[0].cat }));
+    el.setAttribute('data-field', 'cat');
+    el.textContent = XB.lab(list[0].cat) + '（' + XB.pct(list[0].share) + '）';
+  });
+
+  // horizontal bar chart of shares
+  dash.draw('hbar', (el) => {
+    const { role, sport } = XB.seg();
+    const dim = el.dataset.dim;
+    const rows = rowsOf('dist');
+    const tip = XB.tipFor(el);
+    d3.select(el).selectAll('svg, .xb-empty').remove();
+    tip.hidden = true;
+    if (!rows) return;
+    let list = rows.filter((r) => r.role === role && r.sport === sport && r.dim === dim);
+    const order = XB.ORDER[dim];
+    if (el.dataset.order && order) list.sort((a, b) => order.indexOf(a.cat) - order.indexOf(b.cat));
+    else list.sort((a, b) => b.share - a.share || b.n - a.n);
+    if (el.dataset.top) list = list.slice(0, Number(el.dataset.top));
+    if (!list.length) { const p = document.createElement('p'); p.className = 'xb-note xb-empty'; p.textContent = '这个人群没有人回答这一题'; el.appendChild(p); return; }
+    const picked = dash.params().theme || null;
+    const W = Math.max(220, el.clientWidth);
+    const rowH = 26, barH = 16;
+    const svg = d3.select(el).append('svg').attr('width', '100%');
+    const lw = Math.min(W * 0.48, d3.max(list, (d) => XB.textW(svg, XB.lab(d.cat))) + 10);
+    const vw = XB.textW(svg, '100% · 99') + 8;
+    const H = list.length * rowH;
+    svg.attr('viewBox', `0 0 ${W} ${H}`).attr('height', H);
+    const x = d3.scaleLinear([0, d3.max(list, (d) => d.share) || 1], [0, Math.max(10, W - lw - vw)]);
+    const accent = dash.colors[0];
+    const g = svg.selectAll('g').data(list).join('g').attr('transform', (d, i) => `translate(0,${i * rowH})`)
+      .style('cursor', el.dataset.click ? 'pointer' : 'default');
+    g.append('text').attr('x', lw - 8).attr('y', rowH / 2).attr('dy', '0.35em').attr('text-anchor', 'end')
+      .attr('font-size', 12).attr('fill', 'var(--color-fg)').text((d) => XB.lab(d.cat))
+      .each(function () { const t = this; let s = t.textContent; while (t.getComputedTextLength() > lw - 12 && s.length > 4) { s = s.slice(0, -2); t.textContent = s + '…'; } });
+    g.append('rect').attr('class', 'xb-bar').attr('x', lw).attr('y', (rowH - barH) / 2).attr('height', barH).attr('rx', 3)
+      .attr('width', (d) => Math.max(2, x(d.share)))
+      .attr('fill', (d) => (picked && el.dataset.click ? (d.cat === picked ? accent : 'var(--cds-chart-muted)') : accent));
+    g.append('text').attr('x', (d) => lw + Math.max(2, x(d.share)) + 6).attr('y', rowH / 2).attr('dy', '0.35em')
+      .attr('font-size', 12).attr('fill', 'var(--color-fg-muted)').style('font-variant-numeric', 'tabular-nums')
+      .text((d) => XB.pct(d.share) + ' · ' + d.n);
+    g.on('mousemove', (event, d) => XB.showTip(el, tip, event, XB.lab(d.cat), [`${XB.pct(d.share)}（${d.n} / ${d.base} 人）`]))
+      .on('mouseleave', () => { tip.hidden = true; })
+      .on('click', (event, d) => { if (el.dataset.click) dash.setParams({ [el.dataset.click]: picked === d.cat ? null : d.cat }); });
+  });
+
+  // ratings bars (1–5)
+  dash.draw('ratings', (el) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('ratings');
+    const tip = XB.tipFor(el);
+    d3.select(el).selectAll('svg, .xb-empty').remove();
+    tip.hidden = true;
+    if (!rows) return;
+    const list = rows.filter((r) => r.role === role && r.sport === sport).sort((a, b) => a.mean - b.mean);
+    if (!list.length) { const p = document.createElement('p'); p.className = 'xb-note xb-empty'; p.textContent = '这个人群没有人打分'; el.appendChild(p); return; }
+    const W = Math.max(220, el.clientWidth), rowH = 26, barH = 16;
+    const svg = d3.select(el).append('svg').attr('width', '100%');
+    const lw = d3.max(list, (d) => XB.textW(svg, XB.lab(d.feature))) + 10;
+    const vw = XB.textW(svg, '4.44') + 10;
+    const H = list.length * rowH + 18;
+    svg.attr('viewBox', `0 0 ${W} ${H}`).attr('height', H);
+    const x = d3.scaleLinear([1, 5], [lw, W - vw]);
+    const LIMIT = 3.5;
+    const col = (m) => (m < LIMIT ? 'var(--cds-chart-status-critical)' : m < 4 ? 'color-mix(in srgb, var(--cds-chart-status-critical) 35%, var(--color-panel))' : 'var(--cds-chart-muted)');
+    const ax = svg.append('g').attr('transform', `translate(0,${list.length * rowH})`);
+    [1, 2, 3, 4, 5].forEach((t) => {
+      svg.append('line').attr('x1', x(t)).attr('x2', x(t)).attr('y1', 0).attr('y2', list.length * rowH).attr('stroke', 'var(--cds-chart-grid)');
+      ax.append('text').attr('x', x(t)).attr('y', 14).attr('text-anchor', 'middle').attr('font-size', 11).attr('fill', 'var(--color-fg-muted)').text(t + '★');
+    });
+    const g = svg.selectAll('g.r').data(list).join('g').attr('class', 'r').attr('transform', (d, i) => `translate(0,${i * rowH})`);
+    g.append('text').attr('x', lw - 8).attr('y', rowH / 2).attr('dy', '0.35em').attr('text-anchor', 'end').attr('font-size', 12)
+      .attr('font-weight', (d) => (d.mean < LIMIT ? 600 : 400))
+      .attr('fill', (d) => (d.mean < LIMIT ? 'var(--cds-chart-status-critical)' : 'var(--color-fg)')).text((d) => XB.lab(d.feature));
+    g.append('rect').attr('class', 'xb-bar').attr('x', x(1)).attr('y', (rowH - barH) / 2).attr('height', barH).attr('rx', 3).attr('width', (d) => Math.max(2, x(d.mean) - x(1))).attr('fill', (d) => col(d.mean));
+    g.append('text').attr('x', (d) => x(d.mean) + 6).attr('y', rowH / 2).attr('dy', '0.35em').attr('font-size', 12).attr('font-weight', (d) => (d.mean < LIMIT ? 600 : 400)).attr('fill', (d) => (d.mean < LIMIT ? 'var(--cds-chart-status-critical)' : 'var(--color-fg-muted)')).style('font-variant-numeric', 'tabular-nums').text((d) => Number(d.mean).toFixed(2));
+    svg.append('line').attr('x1', x(LIMIT)).attr('x2', x(LIMIT)).attr('y1', 0).attr('y2', list.length * rowH)
+      .attr('stroke', 'var(--cds-chart-reference)').attr('stroke-dasharray', '4 3');
+    g.on('mousemove', (event, d) => XB.showTip(el, tip, event, XB.lab(d.feature), [`平均 ${Number(d.mean).toFixed(2)} 星（${d.n} 人打分）`, `打 1–2 星：${XB.pct(d.lowShare)}`]))
+      .on('mouseleave', () => { tip.hidden = true; });
+  });
+
+  // picked theme chip
+  dash.draw('picked', (el) => {
+    const t = dash.params().theme;
+    el.hidden = !t;
+    el.textContent = t ? '只看：' + XB.lab(t) + '  ×' : '';
+    el.onclick = () => dash.setParams({ theme: null });
+  });
+
+  // comments list
+  dash.draw('comments', (el) => {
+    const { role, sport } = XB.seg();
+    const theme = dash.params().theme || null;
+    const rows = rowsOf('survey');
+    el.replaceChildren();
+    if (!rows) return;
+    const list = rows.filter((r) => r.comment && (role === 'All' || r.role === role) && (sport === 'All' || String(r.sports).split('|').includes(sport)) && (!theme || String(r.themes).split('|').includes(theme)));
+    if (!list.length) { const li = document.createElement('li'); li.textContent = '没有符合条件的原话'; el.appendChild(li); return; }
+    for (const r of list) {
+      const li = document.createElement('li');
+      const m = document.createElement('span'); m.className = 'xb-cm';
+      m.textContent = XB.lab(r.role) + ' · ' + String(r.sports).split('|').filter(Boolean).map(XB.lab).join(' / ');
+      const c = document.createElement('span');
+      c.setAttribute('data-source', 'survey'); c.setAttribute('data-field', 'comment'); c.setAttribute('data-where', 'id=' + r.id);
+      c.textContent = r.comment;
+      li.append(m, c); el.appendChild(li);
+    }
+  });
+
+  // generic answer value: by rank or by category
+  dash.draw('dv', (el) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('dist');
+    const dim = el.dataset.dim;
+    const cat = el.dataset.cat || (el.closest('[data-theme]') ? el.closest('[data-theme]').dataset.theme : null);
+    const list = rows ? rows.filter((r) => r.role === role && r.sport === sport && r.dim === dim).sort((a, b) => b.n - a.n || b.share - a.share) : [];
+    if (!list.length) { el.textContent = '—'; el.removeAttribute('data-where'); el.removeAttribute('data-field'); return; }
+    let r = el.dataset.rank !== undefined ? list[Number(el.dataset.rank)] : list.find((x) => x.cat === cat);
+    const show = el.dataset.show;
+    if (!r) {
+      el.removeAttribute('data-where'); el.removeAttribute('data-field');
+      el.textContent = show === 'share' ? '0%' : show === 'n' ? '0' : '—';
+      return;
+    }
+    el.setAttribute('data-where', XB.whereOf({ role, sport, dim, cat: r.cat }));
+    if (show === 'share' || show === 'n' || show === 'base') el.setAttribute('data-field', show); else el.removeAttribute('data-field');
+    el.textContent = show === 'share' ? XB.pct(r.share) : show === 'n' ? String(r.n) : show === 'base' ? String(r.base)
+      : show === 'label' ? XB.lab(r.cat) : XB.lab(r.cat) + '（' + XB.pct(r.share) + '）';
+  });
+
+  // the answer this segment over-indexes on vs everyone
+  dash.draw('lift', (el) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('lift');
+    const list = rows ? rows.filter((r) => r.role === role && r.sport === sport && r.dim === el.dataset.dim && Number(r.n) >= 2).sort((a, b) => b.lift - a.lift) : [];
+    if (!list.length || list[0].lift <= 0) { el.textContent = '—'; el.removeAttribute('data-where'); return; }
+    const r = list[0];
+    el.setAttribute('data-where', XB.whereOf({ role, sport, dim: r.dim, cat: r.cat }));
+    el.textContent = XB.lab(r.cat) + '（' + XB.pct(r.share) + '，比全体高 ' + Math.round(r.lift * 100) + ' 个百分点）';
+  });
+
+  // feature rating: lowest, highest or named
+  dash.draw('fv', (el) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('ratings');
+    const list = rows ? rows.filter((r) => r.role === role && r.sport === sport).sort((a, b) => a.mean - b.mean) : [];
+    const r = !list.length ? null : el.dataset.feature ? list.find((x) => x.feature === el.dataset.feature) : el.dataset.pick === 'low' ? list[0] : list[list.length - 1];
+    if (!r) { el.textContent = '—'; el.removeAttribute('data-where'); el.removeAttribute('data-field'); return; }
+    el.setAttribute('data-where', XB.whereOf({ role, sport, feature: r.feature }));
+    const show = el.dataset.show;
+    if (show === 'mean') { el.setAttribute('data-field', 'mean'); el.textContent = Number(r.mean).toFixed(2); }
+    else if (show === 'low') { el.setAttribute('data-field', 'lowShare'); el.textContent = XB.pct(r.lowShare); }
+    else { el.removeAttribute('data-field'); el.textContent = XB.lab(r.feature); }
+  });
+
+  // priority badge for an improvement theme
+  dash.draw('pri', (el) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('dist');
+    const theme = el.closest('[data-theme]') ? el.closest('[data-theme]').dataset.theme : null;
+    const r = rows ? rows.find((x) => x.role === role && x.sport === sport && x.dim === 'themes' && x.cat === theme) : null;
+    el.classList.remove('xb-pri-hi', 'xb-pri-mid');
+    if (!r) { el.textContent = '—'; el.removeAttribute('data-where'); return; }
+    el.setAttribute('data-where', XB.whereOf({ role, sport, dim: 'themes', cat: theme }));
+    const n = Number(r.n);
+    if (n >= 10) { el.classList.add('xb-pri-hi'); el.textContent = '高优先级'; }
+    else if (n >= 4) { el.classList.add('xb-pri-mid'); el.textContent = '中优先级'; }
+    else el.textContent = '关注';
+  });
+
+  // original quotes for a theme, within the filter
+  dash.draw('quotes', (el) => {
+    const { role, sport } = XB.seg();
+    const theme = el.dataset.theme;
+    const rows = rowsOf('survey');
+    el.replaceChildren();
+    if (!rows) return;
+    const list = rows.filter((r) => r.comment && (role === 'All' || r.role === role) && (sport === 'All' || String(r.sports).split('|').includes(sport)) && String(r.themes).split('|').includes(theme));
+    for (const r of list) {
+      const li = document.createElement('li');
+      const m = document.createElement('span'); m.className = 'xb-cm';
+      m.textContent = XB.lab(r.role) + ' · ' + String(r.sports).split('|').filter(Boolean).map(XB.lab).join(' / ');
+      const c = document.createElement('span');
+      c.setAttribute('data-source', 'survey'); c.setAttribute('data-field', 'comment'); c.setAttribute('data-where', 'id=' + r.id);
+      c.textContent = r.comment;
+      li.append(m, c); el.appendChild(li);
+    }
+  });
+
+  // population pie (donut) for role or sport
+  const pieSlices = (kind) => {
+    const { role, sport } = XB.seg();
+    const rows = rowsOf('seg');
+    if (!rows) return null;
+    const cats = kind === 'role' ? ['Parent', 'Coach', 'Player & other'] : ['Soccer', 'Basketball', 'Football', 'Ice Hockey', 'Volleyball', 'Baseball', 'Other'];
+    const slices = cats.map((c) => {
+      const r = rows.find((x) => (kind === 'role' ? x.role === c && x.sport === sport : x.role === role && x.sport === c));
+      return { c, n: r ? Number(r.n) : 0, where: kind === 'role' ? { role: c, sport } : { role, sport: c } };
+    }).filter((d) => d.n > 0);
+    const total = d3.sum(slices, (d) => d.n);
+    slices.forEach((d) => { d.share = total ? d.n / total : 0; });
+    return { slices, total, sel: kind === 'role' ? role : sport };
+  };
+  dash.draw('pie', (el) => {
+    const kind = el.dataset.pie;
+    const tip = XB.tipFor(el);
+    d3.select(el).selectAll('svg, .xb-empty').remove();
+    tip.hidden = true;
+    const P = pieSlices(kind);
+    if (!P) return;
+    if (!P.slices.length) { const p = document.createElement('p'); p.className = 'xb-note xb-empty'; p.textContent = '这个组合没有受访者'; el.appendChild(p); return; }
+    const W = Math.max(260, el.clientWidth);
+    const R = Math.min(96, W * 0.22);
+    const svg = d3.select(el).append('svg').attr('width', '100%');
+    const legendW = d3.max(P.slices, (d) => XB.textW(svg, XB.lab(d.c) + '  100% · 99')) + 24;
+    const side = W >= R * 2 + legendW + 40;
+    const H = side ? Math.max(R * 2 + 8, P.slices.length * 24) : R * 2 + 16 + P.slices.length * 24;
+    svg.attr('viewBox', `0 0 ${W} ${H}`).attr('height', H);
+    const cx = side ? R + 4 : W / 2, cy = R + 4;
+    const pal = (i) => dash.colors[i % dash.colors.length];
+    const fill = (d, i) => (P.sel === 'All' ? pal(i) : d.c === P.sel ? pal(0) : 'var(--cds-chart-muted)');
+    const arcs = d3.pie().sort(null).value((d) => d.n)(P.slices);
+    const arc = d3.arc().innerRadius(R * 0.58).outerRadius(R).padAngle(0.012).cornerRadius(2);
+    const g = svg.append('g').attr('transform', `translate(${cx},${cy})`);
+    g.selectAll('path').data(arcs).join('path').attr('d', arc).attr('fill', (a, i) => fill(a.data, i))
+      .attr('stroke', 'var(--color-panel)').attr('stroke-width', 1)
+      .on('mousemove', (event, a) => XB.showTip(el, tip, event, XB.lab(a.data.c), [`${a.data.n} ${kind === 'role' ? '人' : '次提及'} · ${XB.pct(a.data.share)}`]))
+      .on('mouseleave', () => { tip.hidden = true; });
+    g.append('text').attr('text-anchor', 'middle').attr('dy', '-0.1em').attr('font-size', 22).attr('font-family', 'var(--font-anthropic-serif)').attr('fill', 'var(--color-fg)').text(d3.format(',')(P.total));
+    g.append('text').attr('text-anchor', 'middle').attr('dy', '1.4em').attr('font-size', 11).attr('fill', 'var(--color-fg-muted)').text(kind === 'role' ? '人' : '次提及');
+    const lx = side ? R * 2 + 32 : 8;
+    const ly0 = side ? Math.max(0, cy - (P.slices.length * 24) / 2) : R * 2 + 16;
+    const lg = svg.append('g').selectAll('g').data(P.slices).join('g').attr('transform', (d, i) => `translate(${lx},${ly0 + i * 24})`);
+    lg.append('rect').attr('width', 10).attr('height', 10).attr('y', 7).attr('rx', 2).attr('fill', (d, i) => fill(d, i));
+    lg.append('text').attr('x', 18).attr('y', 12).attr('dy', '0.35em').attr('font-size', 12)
+      .attr('font-weight', (d) => (d.c === P.sel ? 600 : 400)).attr('fill', 'var(--color-fg)').text((d) => XB.lab(d.c));
+    lg.append('text').attr('x', 18 + d3.max(P.slices, (d) => XB.textW(svg, XB.lab(d.c))) + 12).attr('y', 12).attr('dy', '0.35em').attr('font-size', 12)
+      .attr('fill', 'var(--color-fg-muted)').style('font-variant-numeric', 'tabular-nums').text((d) => XB.pct(d.share) + ' · ' + d.n);
+  });
+  dash.draw('pietop', (el) => {
+    const P = pieSlices(el.dataset.pie);
+    if (!P || !P.slices.length) { el.textContent = '—'; el.removeAttribute('data-where'); return; }
+    const top = P.slices.slice().sort((a, b) => b.n - a.n)[0];
+    el.setAttribute('data-where', XB.whereOf(top.where));
+    el.textContent = XB.lab(top.c) + '（' + XB.pct(top.share) + '）';
+  });
+  dash.draw('piesel', (el) => {
+    const P = pieSlices(el.dataset.pie);
+    const d = P ? P.slices.find((x) => x.c === P.sel) : null;
+    if (!d) { el.textContent = '—'; el.removeAttribute('data-where'); return; }
+    el.setAttribute('data-where', XB.whereOf(d.where));
+    el.textContent = XB.lab(d.c) + '占 ' + XB.pct(d.share);
+  });
+
+  // segment comparison table
+  window.XB_SORT = window.XB_SORT || { key: 'order', dir: 1 };
+  const SEGS = [['All', 'All'], ['Parent', 'All'], ['Coach', 'All'], ['Player & other', 'All'], ['All', 'Soccer'], ['All', 'Basketball'], ['All', 'Football'], ['All', 'Ice Hockey'], ['All', 'Volleyball'], ['All', 'Baseball'], ['All', 'Other'], ['Parent', 'Soccer'], ['Coach', 'Soccer'], ['Parent', 'Basketball'], ['Parent', 'Football'], ['Coach', 'Football']];
+  const COLS = [['n', 'int', null], ['avgSpent', 'usd', 100], ['highBudgetRate', 'pct', 0.1], ['tripodRate', 'pct', 0.1], ['protectionRate', 'pct', 0.1], ['upgraderRate', 'pct', 0.1], ['metaRate', 'pct', 0.1], ['sameDayRate', 'pct', 0.1], ['aiTracking', 'num2', 0.3], ['autoZoom', 'num2', 0.3], ['res4k', 'num2', 0.3]];
+  dash.draw('segtable', (tb) => {
+    const rows = rowsOf('seg');
+    tb.replaceChildren();
+    if (!rows) return;
+    const base = rows.find((r) => r.role === 'All' && r.sport === 'All');
+    let list = SEGS.map(([ro, sp], i) => { const r = rows.find((x) => x.role === ro && x.sport === sp); return r ? { r, i } : null; }).filter(Boolean);
+    const s = window.XB_SORT;
+    if (s.key !== 'order') list.sort((a, b) => (s.key === 'label' ? a.i - b.i : ((Number(a.r[s.key]) || 0) - (Number(b.r[s.key]) || 0))) * s.dir);
+    for (const { r } of list) {
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-key', [r.role, r.sport].map((v) => String(v).replace(/%/g, '%25').replace(/,/g, '%2C')).join(','));
+      if (r.role === 'All' && r.sport === 'All') tr.className = 'xb-grp';
+      for (const k of ['role', 'sport']) { const td = document.createElement('td'); td.textContent = XB.lab(r[k]); td.style.textAlign = 'left'; tr.appendChild(td); }
+      for (const [k, f, th] of COLS) {
+        const td = document.createElement('td');
+        td.textContent = XB.fmt(r[k], f);
+        if (th !== null && base && r !== base && r[k] !== null && Number(r.n) >= 5) {
+          const d = Number(r[k]) - Number(base[k]);
+          if (d >= th) td.className = 'xb-hi'; else if (d <= -th) td.className = 'xb-lo';
+        }
+        tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+  });
+
+  // heatmap helpers
+  const HEAT_SEGS = SEGS.slice(0, 11);
+  const segName = (ro, sp) => (ro === 'All' && sp === 'All' ? '全体' : ro !== 'All' ? XB.lab(ro) : XB.lab(sp));
+  const heatGrid = (el, cols, cellOf, colLabel, valText, tipLines, domain) => {
+    const tip = XB.tipFor(el);
+    d3.select(el).selectAll('svg').remove();
+    tip.hidden = true;
+    const W = Math.max(320, el.clientWidth);
+    const svg = d3.select(el).append('svg').attr('width', '100%');
+    const lw = d3.max(HEAT_SEGS, ([ro, sp]) => XB.textW(svg, segName(ro, sp))) + 12;
+    const cw = Math.max(34, (W - lw) / cols.length);
+    const ch = 28;
+    const headH = 96;
+    const Wtot = lw + cw * cols.length;
+    const H = headH + ch * HEAT_SEGS.length;
+    svg.attr('viewBox', `0 0 ${Wtot} ${H}`).attr('height', H * Math.min(1, W / Wtot));
+    const bad = XB.css(el, '--cds-chart-status-critical') || '#d9534f';
+    const mid = XB.css(el, '--color-panel') || '#f5f5f5';
+    const good = dash.colors[0];
+    const color = d3.scaleLinear(domain, [bad, mid, good]).interpolate(d3.interpolateRgb).clamp(true);
+    cols.forEach((c, j) => {
+      svg.append('text').attr('transform', `translate(${lw + j * cw + cw / 2},${headH - 6}) rotate(-45)`).attr('font-size', 11).attr('fill', 'var(--color-fg-muted)').text(colLabel(c));
+    });
+    HEAT_SEGS.forEach(([ro, sp], i) => {
+      svg.append('text').attr('x', lw - 8).attr('y', headH + i * ch + ch / 2).attr('dy', '0.35em').attr('text-anchor', 'end').attr('font-size', 12)
+        .attr('font-weight', ro === 'All' && sp === 'All' ? 600 : 400).attr('fill', 'var(--color-fg)').text(segName(ro, sp));
+      cols.forEach((c, j) => {
+        const cell = cellOf(ro, sp, c);
+        const g = svg.append('g').attr('transform', `translate(${lw + j * cw},${headH + i * ch})`);
+        g.append('rect').attr('x', 1).attr('y', 1).attr('width', cw - 2).attr('height', ch - 2).attr('rx', 3)
+          .attr('fill', cell ? color(cell.v) : 'transparent').attr('stroke', cell ? 'none' : 'var(--color-border-line)')
+          .attr('opacity', cell && cell.n < 5 ? 0.35 : 1);
+        if (cell) g.append('text').attr('x', cw / 2).attr('y', ch / 2).attr('dy', '0.35em').attr('text-anchor', 'middle').attr('font-size', 11)
+          .attr('fill', 'var(--color-fg)').style('font-variant-numeric', 'tabular-nums').text(valText(cell.v));
+        g.on('mousemove', (event) => { if (cell) XB.showTip(el, tip, event, segName(ro, sp) + ' · ' + colLabel(c), tipLines(cell)); })
+          .on('mouseleave', () => { tip.hidden = true; });
+      });
+    });
+  };
+
+  dash.draw('heat', (el) => {
+    const rows = rowsOf('ratings');
+    if (!rows) { d3.select(el).selectAll('svg').remove(); return; }
+    const base = rows.filter((r) => r.role === 'All' && r.sport === 'All').sort((a, b) => a.mean - b.mean).map((r) => r.feature);
+    heatGrid(el, base, (ro, sp, f) => { const r = rows.find((x) => x.role === ro && x.sport === sp && x.feature === f); return r ? { v: Number(r.mean), n: Number(r.n), low: Number(r.lowShare) } : null; },
+      (f) => XB.lab(f), (v) => v.toFixed(1), (c) => [`平均 ${c.v.toFixed(2)} 星（${c.n} 人）`, `打 1–2 星：${XB.pct(c.low)}`], [2.8, 3.7, 4.6]);
+  });
+
+  dash.draw('reasonheat', (el) => {
+    const rows = rowsOf('dist');
+    if (!rows) { d3.select(el).selectAll('svg').remove(); return; }
+    const cols = rows.filter((r) => r.role === 'All' && r.sport === 'All' && r.dim === 'reasons').sort((a, b) => b.n - a.n).slice(0, 10).map((r) => r.cat);
+    heatGrid(el, cols, (ro, sp, c) => {
+      const r = rows.find((x) => x.role === ro && x.sport === sp && x.dim === 'reasons' && x.cat === c);
+      const any = rows.find((x) => x.role === ro && x.sport === sp && x.dim === 'reasons');
+      if (!any) return null;
+      return { v: r ? Number(r.share) : 0, n: Number(any.base), k: r ? Number(r.n) : 0 };
+    }, (c) => XB.lab(c), (v) => XB.pct(v), (c) => [`${XB.pct(c.v)}（${c.k} / ${c.n} 人）`], [0, 0.3, 0.7]);
+  });
+})();
+</script>
+
+<script>
+/* sorting the comparison table */
+(() => {
+  document.querySelectorAll('.xb-table th[data-sort]').forEach((th) => th.addEventListener('click', () => {
+    const k = th.dataset.sort;
+    const s = window.XB_SORT || { key: 'order', dir: 1 };
+    window.XB_SORT = { key: k, dir: s.key === k ? -s.dir : (k === 'label' ? 1 : -1) };
+    document.querySelectorAll('.xb-table th[data-sort]').forEach((h) => h.setAttribute('aria-sort', h === th ? (window.XB_SORT.dir > 0 ? 'ascending' : 'descending') : 'none'));
+    dash.draw('segtable');
+  }));
+})();
+</script>
+
+</div>
+</body>
+</html>
